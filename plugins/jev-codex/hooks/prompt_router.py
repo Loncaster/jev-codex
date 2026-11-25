@@ -25,8 +25,8 @@ def routing_policy(plugin_root: Path, current_model: str, checkpoint: Path) -> s
         "The parent remains responsible for coordination, verification, and the final response. "
         "For each concrete subtask, save only that subtask as UTF-8 and make a fresh routing decision immediately before every spawn_agent with: "
         f'{python} "{route}" --task-file "<absolute-task-file>" --current-model "{current_model}". '
-        "The router discovers the currently available Codex models and supported reasoning efforts locally, then chooses the lightest reliable pair across the newest two general GPT families. "
-        "Astra is reserved for deep tasks where Jev reports that Sol is insufficient; ultra effort is never selected. "
+        "The router uses GPT-6.2 Sol medium for ordinary work, raises Sol effort for deep work, and can choose GPT-6 Luna or GPT-6.1 Terra at low effort for very simple, low-risk tasks. "
+        "It checks the available model and effort pairs in the local Codex catalog and never selects ultra. "
         "Never reuse a routing result for another subtask. When route is inherit, omit model and reasoning_effort. "
         "Pass a selected model and reasoning_effort only to that spawn. If Codex rejects the selected model, retry that subtask once by inheritance without calling Jev again. "
         f"Maintain the preventive checkpoint at {checkpoint}."

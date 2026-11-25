@@ -18,7 +18,7 @@ Configure `JEV_API_URL`, `JEV_MODEL`, and `JEV_API_KEY` for RouterAI or `TYPESAF
 
 For every non-trivial request containing an independent subtask, Codex creates at least one useful subagent. Before every spawn, it runs `scripts/jev_route.py` on only that subtask. The parent keeps coordination, integration, verification, and the final response.
 
-The router discovers visible models and supported efforts from local App Server `model/list`, considers the newest two numeric GPT families, excludes `ultra`, and prefers the lightest reliable pair. The previous family is eligible up to insufficiency probability `0.50` for `fast` and `balanced`, and `0.30` for `deep`. Effort is calibrated to `low` for `fast`, `low` to `medium` for `balanced`, and `high` to `max` for `deep`. Risk above `0.70` raises effort to at least `high`. Current-family Astra requires a `deep` task and probability above `0.70` that current-family Sol is insufficient even with high effort.
+The router checks available models and efforts using the local Codex App Server. Ordinary work uses GPT-6.2 Sol at `medium`. Deep or high-risk work uses the same model at `high`, `xhigh`, or `max`. Confident, very simple, low-risk work can use GPT-6 Luna or GPT-6.1 Terra at `low`.
 
 Missing key, TypeSafe or discovery failure, sensitive or oversized input, invalid response, or low confidence returns `route=inherit`. Delegation still occurs without model or effort overrides. A rejected explicit model retries once by inheritance without another Jev call.
 
@@ -36,7 +36,7 @@ The `jev-checkpoint` skill and `scripts/checkpoint.py` maintain `.codex/jev-chec
 
 ## Privacy
 
-Routing sends the subtask and five typed questions to TypeSafe System One. Review sends the diff metadata and fourteen typed questions. Model discovery and checkpoints stay local. See [security details](../../docs/security.md).
+Routing sends the subtask and four typed questions to the configured Jev provider. Review sends the diff, its metadata, and fourteen typed questions. Model discovery and checkpoints stay local. See [security details](../../docs/security.md).
 
 ## Credits
 

@@ -17,29 +17,17 @@ from jev_client import JevUnavailable, ask_jev, contains_sensitive_input, jev_re
 
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
-DEFAULT_EFFORT = {"fast": "low", "balanced": "medium", "deep": "high"}
-MIN_EFFORT = {"fast": "low", "balanced": "low", "deep": "high"}
-MAX_EFFORT = {"fast": "low", "balanced": "medium", "deep": "max"}
-PREVIOUS_FAMILY_MAX = {"fast": 0.5, "balanced": 0.5, "deep": 0.3}
-ASTRA_MIN_SOL_INSUFFICIENT = 0.7
+BASE_MODEL = "gpt-6.2-sol"
+TERRA_MODEL = "gpt-6.1-terra"
+LUNA_MODEL = "gpt-6-luna"
 MODEL_ID = re.compile(r"^gpt-(\d+(?:\.\d+)?)-(luna|terra|sol|astra)$")
 TIERS = ("fast", "balanced", "deep")
-CURRENT_ROLES = {
-    "fast": ("luna", "sol"),
-    "balanced": ("sol",),
-    "deep": ("sol",),
-}
-PREVIOUS_ROLES = {
-    "fast": ("luna",),
-    "balanced": ("terra", "sol"),
-    "deep": ("sol",),
-}
 QUESTIONS = {
     "tier": {
         "type": "choice",
         "instructions": "Choose the least costly Codex tier that can complete this subtask reliably.",
         "criteria": {
-            "fast": "Mechanical lookup, narrow edit, or simple verification.",
+            "fast": "A clearly specified, low-risk mechanical lookup, edit, or verification with at most a few routine steps. No design, diagnosis, or judgment.",
             "balanced": "Ordinary implementation, debugging, or review with bounded complexity.",
             "deep": "Architecture, security, migration, ambiguity, or high-consequence reasoning.",
         },
@@ -57,26 +45,18 @@ QUESTIONS = {
     },
     "risky": {
         "type": "noul",
-        "instructions": "Estimate the probability that an underpowered model could cause material harm.",
+        "instructions": "Estimate the probability of material harm to data, security, or production if the subtask is done poorly. A wrong answer to a read-only lookup that can be checked easily has negligible risk.",
         "criteria": {
-            "false": "Low consequence and readily reversible.",
+            "false": "Read-only lookup or check, or a low-consequence and readily reversible edit.",
             "true": "Security, data, production, or irreversible consequence.",
         },
     },
-    "previous_family_insufficient": {
+    "luna_insufficient": {
         "type": "noul",
-        "instructions": "Estimate whether the previous available GPT model family cannot complete this subtask reliably at the selected effort.",
+        "instructions": "For a fast subtask, estimate whether GPT-6 Luna at low effort would be insufficient.",
         "criteria": {
-            "false": "The previous family is sufficient; prefer it to conserve compute.",
-            "true": "The previous family is likely insufficient; use the current family.",
-        },
-    },
-    "sol_insufficient": {
-        "type": "noul",
-        "instructions": "Estimate whether current-family Sol, even with high, xhigh, or max reasoning effort, cannot complete this subtask reliably and Astra is strictly necessary.",
-        "criteria": {
-            "false": "Current-family Sol can complete the task reliably; prefer Sol even when the task is important or high risk.",
-            "true": "The task exceeds current-family Sol despite high, xhigh, or max effort, so Astra is strictly necessary.",
+            "false": "Direct lookup or one obvious check with an explicit input or target.",
+            "true": "Still mechanical and low-risk, but requires interpreting several inputs or carrying out a few tightly bounded steps.",
         },
     },
 }
@@ -95,7 +75,7 @@ def _number(value: object, minimum: float = 0, maximum: float = 1) -> float:
     return number
 
 
-def _decision(payload: object) -> tuple[str, float, str, float, float, float]:
+def _decision(payload: object) -> tuple[str, float, str, float, float]:
     if not isinstance(payload, dict) or not isinstance(payload.get("answers"), dict):
         raise ValueError
     answers = payload["answers"]
@@ -103,12 +83,11 @@ def _decision(payload: object) -> tuple[str, float, str, float, float, float]:
         answers.get("tier"),
         answers.get("effort"),
         answers.get("risky"),
-        answers.get("previous_family_insufficient"),
-        answers.get("sol_insufficient"),
+        answers.get("luna_insufficient"),
     )
     if not all(isinstance(answer, dict) for answer in required):
         raise ValueError
-    tier_answer, effort_answer, risk_answer, previous_answer, sol_answer = required
+    tier_answer, effort_answer, risk_answer, luna_answer = required
 
     tier = tier_answer.get("choice")
     if tier not in TIERS:
@@ -117,23 +96,17 @@ def _decision(payload: object) -> tuple[str, float, str, float, float, float]:
     effort_score = _number(effort_answer.get("score"), 0, 4)
     effort_confidence = _number(effort_answer.get("confidence"))
     risk = _number(risk_answer.get("noul"))
-    previous_insufficient = _number(previous_answer.get("noul"))
-    sol_insufficient = _number(sol_answer.get("noul"))
-    effort = (
-        EFFORTS[min(4, int(effort_score + 0.5))]
-        if effort_confidence >= 0.3
-        else DEFAULT_EFFORT[tier]
-    )
+    luna_insufficient = _number(luna_answer.get("noul"))
     if risk > 0.7:
-        effort = EFFORTS[max(2, EFFORTS.index(effort))]
+        tier = "deep"
+    elif tier == "fast" and risk > 0.3:
+        tier = "balanced"
+
+    if tier == "deep":
+        effort = EFFORTS[max(2, int(effort_score + 0.5))] if effort_confidence >= 0.3 else "high"
     else:
-        effort = EFFORTS[
-            min(
-                EFFORTS.index(MAX_EFFORT[tier]),
-                max(EFFORTS.index(MIN_EFFORT[tier]), EFFORTS.index(effort)),
-            )
-        ]
-    return tier, confidence, effort, risk, previous_insufficient, sol_insufficient
+        effort = "low" if tier == "fast" else "medium"
+    return tier, confidence, effort, risk, luna_insufficient
 
 
 def _send(process: object, message: dict[str, object]) -> None:
@@ -174,7 +147,9 @@ def discover_models(
     }
     if os.name == "nt":
         options["creationflags"] = subprocess.CREATE_NO_WINDOW
-    process = process_factory(["codex", "app-server", "--stdio"], **options)
+    desktop_cli = child_env.get("CODEX_APP_RUNTIME_CLI_PATH")
+    executable = desktop_cli if desktop_cli and Path(desktop_cli).is_file() else "codex"
+    process = process_factory([executable, "app-server", "--stdio"], **options)
     result: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
 
     def transact() -> None:
@@ -226,23 +201,16 @@ def discover_models(
                 process.kill()
 
 
-def _family_sort_key(family: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in family.split("."))
-
-
-def _catalog(
-    models: object,
-) -> tuple[dict[str, dict[str, tuple[str, tuple[str, ...]]]], str, str | None]:
+def _catalog(models: object) -> dict[str, tuple[str, ...]]:
     if not isinstance(models, list):
         raise ValueError
-    families: dict[str, dict[str, tuple[str, tuple[str, ...]]]] = {}
+    catalog: dict[str, tuple[str, ...]] = {}
     for item in models:
         if not isinstance(item, dict) or item.get("hidden") is True or item.get("modelSpecialty") is not None:
             continue
         name = item.get("model")
-        match = MODEL_ID.fullmatch(name) if isinstance(name, str) else None
         supported = item.get("supportedReasoningEfforts")
-        if match is None or not isinstance(supported, list):
+        if name not in (BASE_MODEL, TERRA_MODEL, LUNA_MODEL) or not isinstance(supported, list):
             continue
         efforts = tuple(
             effort
@@ -252,43 +220,11 @@ def _catalog(
                 for option in supported
             )
         )
-        if not efforts:
-            continue
-        family, role = match.groups()
-        families.setdefault(family, {}).setdefault(role, (name, efforts))
-    newest = sorted(families, key=_family_sort_key, reverse=True)[:2]
-    if not newest:
+        if efforts:
+            catalog.setdefault(name, efforts)
+    if BASE_MODEL not in catalog:
         raise ValueError
-    selected = {family: families[family] for family in newest}
-    return selected, newest[0], newest[1] if len(newest) > 1 else None
-
-
-def _select_model(
-    families: dict[str, dict[str, tuple[str, tuple[str, ...]]]],
-    current_family: str,
-    previous_family: str | None,
-    tier: str,
-    previous_insufficient: float,
-    sol_insufficient: float,
-) -> tuple[str, tuple[str, ...]]:
-    if tier == "deep" and sol_insufficient > ASTRA_MIN_SOL_INSUFFICIENT:
-        target_families = ((current_family, ("astra",)),)
-    else:
-        use_previous = (
-            previous_family is not None
-            and previous_insufficient <= PREVIOUS_FAMILY_MAX[tier]
-        )
-        target_families = (
-            ((previous_family, PREVIOUS_ROLES[tier]), (current_family, CURRENT_ROLES[tier]))
-            if use_previous
-            else ((current_family, CURRENT_ROLES[tier]),)
-        )
-    for family, family_roles in target_families:
-        for role in family_roles:
-            selected = families[family].get(role)
-            if selected is not None:
-                return selected
-    raise ValueError
+    return catalog
 
 
 def _clamp_effort(requested: str, supported: tuple[str, ...]) -> str:
@@ -296,13 +232,12 @@ def _clamp_effort(requested: str, supported: tuple[str, ...]) -> str:
     for effort in EFFORTS[index:]:
         if effort in supported:
             return effort
-    for effort in reversed(EFFORTS[:index]):
-        if effort in supported:
-            return effort
     raise ValueError
 
 
 def _model_tier(model: str | None) -> str | None:
+    if model in (LUNA_MODEL, TERRA_MODEL):
+        return "fast"
     match = MODEL_ID.fullmatch(model) if isinstance(model, str) else None
     if match is None:
         return None
@@ -330,20 +265,14 @@ def route_task(
         return _fallback("input_too_large")
 
     try:
-        families, current_family, previous_family = _catalog(
-            (discover or discover_models)()
-        )
+        catalog = _catalog((discover or discover_models)())
     except Exception:
         return _fallback("model_discovery_failed")
 
     try:
-        tier, confidence, effort, risk, previous_insufficient, sol_insufficient = _decision(
+        tier, confidence, effort, risk, luna_insufficient = _decision(
             ask(
-                {
-                    "task": task,
-                    "current_family": current_family,
-                    "previous_family": previous_family,
-                },
+                {"task": task},
                 QUESTIONS,
                 **request_options,
             )
@@ -362,20 +291,20 @@ def route_task(
     if parent_tier is None:
         if tier != "deep":
             return _fallback("unknown_current_model")
-    elif TIERS.index(tier) < TIERS.index(parent_tier) and confidence < 0.6:
+    elif confidence < 0.6 and (tier == "fast" or TIERS.index(tier) < TIERS.index(parent_tier)):
         return _fallback("low_confidence")
 
+    model = BASE_MODEL
+    if tier == "fast":
+        if luna_insufficient <= 0.5 and "low" in catalog.get(LUNA_MODEL, ()):
+            model = LUNA_MODEL
+        elif "low" in catalog.get(TERRA_MODEL, ()):
+            model = TERRA_MODEL
+        else:
+            tier, effort = "balanced", "medium"
     try:
-        model, supported = _select_model(
-            families,
-            current_family,
-            previous_family,
-            tier,
-            previous_insufficient,
-            sol_insufficient,
-        )
-        effort = _clamp_effort(effort, supported)
-    except (KeyError, ValueError):
+        effort = _clamp_effort(effort, catalog[model])
+    except ValueError:
         return _fallback("model_discovery_failed")
 
     return {
@@ -384,8 +313,7 @@ def route_task(
         "reasoning_effort": effort,
         "confidence": confidence,
         "risk": risk,
-        "previous_family_insufficient": previous_insufficient,
-        "sol_insufficient": sol_insufficient,
+        "luna_insufficient": luna_insufficient,
     }
 
 

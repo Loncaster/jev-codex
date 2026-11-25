@@ -21,7 +21,7 @@ Jev for Codex is a repository marketplace containing one plugin. It has no daemo
 
 ## Data flow
 
-For routing, Codex constructs a bounded subtask brief. `jev_route.py` discovers the local catalog, then sends the brief, current/previous family names, and typed routing questions to the configured Jev provider. It validates the response, applies local thresholds, and prints one compact JSON decision.
+For routing, Codex constructs a bounded subtask brief. `jev_route.py` discovers the local catalog, then sends the brief and typed routing questions to the configured Jev provider. It validates the response, checks the chosen model and effort against the catalog, and prints one compact JSON decision.
 
 For review, `jev_review.py` reads a tracked working diff, a validated Git range, or an explicit diff file. It sends the review state and fourteen questions through the same client, validates all answers, then calculates the verdict locally from `policy.json`.
 

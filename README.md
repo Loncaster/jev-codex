@@ -13,8 +13,7 @@ This is an independent community project. It is not an official project of, or e
 | Feature | Behavior |
 |---|---|
 | Subagent policy | Requires useful delegation for non-trivial, independently delegable work while keeping coordination and final verification in the parent. |
-| Model and effort routing | Discovers models available in the current Codex app and evaluates the newest two numeric GPT families. |
-| Conservative Astra use | Selects current-family Astra only for deep work when Jev reports that current-family Sol is insufficient. |
+| Model and effort routing | Uses GPT-6.2 Sol Medium for ordinary work and raises Sol effort for deep work. Very simple, low-risk subtasks can use GPT-6 Luna or GPT-6.1 Terra at Low. |
 | Safe fallback | Uses `route=inherit` when the key is missing, the Jev provider is unavailable, discovery fails, or confidence is insufficient. |
 | Code review | Evaluates 14 typed checks and applies local deterministic policy to produce `BLOCK`, `SECURITY REVIEW`, `NITS`, or `MERGE`. |
 | Checkpoints | Validates a nine-section handoff, rejects likely secrets, confines it to the workspace, and writes atomically. |
@@ -86,11 +85,11 @@ In the new chat, ask Codex to route a small subtask with Jev and report only `ro
 
 The first successful prompt in a chat injects the delegation policy. Before every `spawn_agent`, Codex routes the exact subtask independently. A `route=inherit` result still permits the required subagent; Codex simply omits explicit model and effort overrides.
 
-The router discovers visible general-purpose models and their supported reasoning efforts from a short-lived local `codex app-server --stdio` process. It considers the newest two numeric GPT families present at that time, so it does not depend on hard-coded current-version names. It excludes `ultra` and prefers the lowest-cost pair judged reliable. See [subagent policy](docs/subagents.md) and [routing policy](docs/routing.md).
+The router checks the three model IDs and their supported efforts using the local Codex App Server. It prefers the CLI provided by Desktop when available. It inherits the parent configuration when GPT-6.2 Sol is missing from the catalog. See [subagent policy](docs/subagents.md) and [routing policy](docs/routing.md).
 
 ## Benchmark result
 
-The release policy was selected on 22 calibration tasks, then evaluated on 22 different, frozen repository-analysis tasks. The holdout compared calibrated live Jev routing with `gpt-5.6-sol/medium` across 44 independently recorded executions.
+This upstream benchmark measured the previous family-based policy on 22 held-out repository-analysis tasks across 44 executions. The GPT-6.2 Sol routing policy has not been benchmarked against that holdout.
 
 | Metric | Control | Calibrated Jev | Result |
 |---|---:|---:|---:|
@@ -117,7 +116,7 @@ For long work, the `jev-checkpoint` skill maintains `.codex/jev-checkpoints/<ses
 
 ## Privacy
 
-The configured Jev provider receives the subtask description and five typed questions for routing, or the diff, title, description, changed-file list, and fourteen typed questions for review. Model discovery and checkpoint handling stay local. See [security and data flow](docs/security.md).
+The configured Jev provider receives the subtask description and four typed questions for routing, or the diff, title, description, changed-file list, and fourteen typed questions for review. Model discovery and checkpoint handling stay local. See [security and data flow](docs/security.md).
 
 ## Update
 

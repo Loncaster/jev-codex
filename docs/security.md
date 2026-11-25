@@ -4,7 +4,7 @@
 
 The plugin sends HTTPS requests to `https://api.typesafe.ai/v1/systemone` by default. Setting `JEV_API_URL` to `https://routerai.ru/api/v1/decisions` selects RouterAI. The client accepts these two endpoints and rejects HTTP redirects.
 
-- Routing sends the subtask text, detected current/previous family names, selected Jev model identifier, and five typed questions.
+- Routing sends the subtask text, selected Jev model identifier, and four typed questions.
 - Review sends the diff, title, description, changed-file list, selected Jev model identifier, and fourteen typed questions.
 
 The Authorization header uses `TYPESAFE_API_KEY` for TypeSafe and `JEV_API_KEY` for RouterAI. The plugin does not intentionally log the key, task, diff, request body, or response body.
