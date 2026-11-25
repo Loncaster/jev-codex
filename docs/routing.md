@@ -4,7 +4,7 @@ The router minimizes expected compute while retaining conservative quality gates
 
 ## Discovery
 
-`jev_route.py` starts `codex app-server --stdio`, performs `initialize`, sends `initialized`, and requests `model/list`. The process is short-lived, has a three-second discovery timeout, and does not receive `TYPESAFE_API_KEY` in its environment.
+`jev_route.py` starts `codex app-server --stdio`, performs `initialize`, sends `initialized`, and requests `model/list`. The process has a three-second discovery timeout and receives an environment with both Jev provider keys removed.
 
 The catalog keeps visible general-purpose IDs matching `gpt-<numeric-family>-<role>`, records the reasoning efforts each model reports, and selects the newest two numeric families. Hidden and specialty models are excluded. If only one usable family exists, routing stays within it. Pagination, malformed output, timeout, or process failure returns `route=inherit`.
 
@@ -40,7 +40,7 @@ Selectable efforts are `low`, `medium`, `high`, `xhigh`, and `max`. `ultra` is i
 
 The router returns `route=inherit` without `model` or `reasoning_effort` when:
 
-- `TYPESAFE_API_KEY` is missing;
+- the configured Jev provider's API key is missing or `JEV_API_URL` is unsupported;
 - `JEV_ROUTER_DISABLED=1`;
 - the task contains secret-like input or exceeds 20,000 characters;
 - App Server discovery fails or produces an incomplete catalog;

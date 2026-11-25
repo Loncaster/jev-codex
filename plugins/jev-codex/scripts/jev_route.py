@@ -13,7 +13,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from jev_client import JevUnavailable, ask_jev, contains_sensitive_input
+from jev_client import JevUnavailable, ask_jev, contains_sensitive_input, jev_request_options
 
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -163,6 +163,7 @@ def discover_models(
     """Read the visible Codex model catalog through one short-lived App Server."""
     child_env = dict(os.environ)
     child_env.pop("TYPESAFE_API_KEY", None)
+    child_env.pop("JEV_API_KEY", None)
     options: dict[str, object] = {
         "stdin": subprocess.PIPE,
         "stdout": subprocess.PIPE,
@@ -319,9 +320,10 @@ def route_task(
 ) -> dict[str, object]:
     if env.get("JEV_ROUTER_DISABLED") == "1":
         return _fallback("disabled")
-    api_key = env.get("TYPESAFE_API_KEY")
-    if not api_key:
-        return _fallback("api_key_missing")
+    try:
+        request_options = jev_request_options(env)
+    except JevUnavailable as exc:
+        return _fallback(exc.reason)
     if contains_sensitive_input(task):
         return _fallback("sensitive_input")
     if len(task) > 20_000:
@@ -343,7 +345,7 @@ def route_task(
                     "previous_family": previous_family,
                 },
                 QUESTIONS,
-                api_key=api_key,
+                **request_options,
             )
         )
     except JevUnavailable as exc:

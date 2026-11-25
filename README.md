@@ -15,18 +15,20 @@ This is an independent community project. It is not an official project of, or e
 | Subagent policy | Requires useful delegation for non-trivial, independently delegable work while keeping coordination and final verification in the parent. |
 | Model and effort routing | Discovers models available in the current Codex app and evaluates the newest two numeric GPT families. |
 | Conservative Astra use | Selects current-family Astra only for deep work when Jev reports that current-family Sol is insufficient. |
-| Safe fallback | Uses `route=inherit` when the key is missing, TypeSafe is unavailable, discovery fails, or confidence is insufficient. |
+| Safe fallback | Uses `route=inherit` when the key is missing, the Jev provider is unavailable, discovery fails, or confidence is insufficient. |
 | Code review | Evaluates 14 typed checks and applies local deterministic policy to produce `BLOCK`, `SECURITY REVIEW`, `NITS`, or `MERGE`. |
 | Checkpoints | Validates a nine-section handoff, rejects likely secrets, confines it to the workspace, and writes atomically. |
 
 ## Quick start
 
+Run these commands from the fork's root using the Codex CLI that shares the Desktop app's Codex home:
+
 ```powershell
-codex plugin marketplace add SomebooksIT/jev-codex --ref main
+codex plugin marketplace add .
 codex plugin add jev-codex@jev-codex
 ```
 
-Set `TYPESAFE_API_KEY` in the environment used to launch Codex Desktop, quit Codex completely, then open a new chat. Ask Codex to route a small independent subtask and report only `route`, `reason`, `model`, and `reasoning_effort`—never the key itself.
+Configure one of the providers below, quit Codex Desktop completely, relaunch it, and open a new chat. If Desktop asks for hook approval, review the installed `jev-codex` hooks in Settings and trust them to enable automatic routing and checkpoint reminders.
 
 No key yet? The plugin still works: routing returns `route=inherit` and Codex uses the current model.
 
@@ -35,43 +37,43 @@ No key yet? The plugin still works: routing returns `route=inherit` and Codex us
 - Codex Desktop with plugin hooks and subagents.
 - Python 3.10 or newer available to Codex.
 - Git for review and installation workflows.
-- A TypeSafe System One API key for Jev decisions. The plugin remains usable without one through inheritance fallback.
+- A RouterAI or TypeSafe System One API key for Jev decisions. Routing inherits the current Codex model when no key is available.
 
-## Configure the TypeSafe key
+## Configure the Jev provider
 
-Codex reads the key from an environment variable when the Desktop process starts. The variable name must be exactly `TYPESAFE_API_KEY`; its value is the API key alone, without a `Bearer ` prefix. Never put the key in a prompt, repository, checkpoint, issue, or log.
+| Provider | `JEV_API_URL` | `JEV_MODEL` default | Credential variable |
+|---|---|---|---|
+| RouterAI | `https://routerai.ru/api/v1/decisions` | `~typesafe/jev-latest` | `JEV_API_KEY` |
+| TypeSafe | Unset or `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` |
+
+Set `JEV_MODEL` to override the model for the selected endpoint. To switch back to the TypeSafe defaults, remove `JEV_API_URL` and `JEV_MODEL`. Each endpoint uses its own credential. Routing inherits the current model and review returns `UNAVAILABLE` if the configured endpoint is unsupported or its credential is missing. This configuration applies to Jev requests for routing and review. Codex continues to use the model and account selected in Desktop. See the [RouterAI Decisions API guide](https://routerai.ru/docs/guides/overview/decisions/overview).
+
+Set the key to its value alone, without a `Bearer ` prefix. Keep keys out of prompts, repositories, checkpoints, issues, and logs.
 
 ### Windows Desktop — recommended
 
 1. Quit Codex Desktop completely.
 2. Open the Start menu and search for **Edit environment variables for your account**.
 3. Under **User variables**, select **New**.
-4. Set **Variable name** to `TYPESAFE_API_KEY`.
-5. Paste the TypeSafe API key into **Variable value**, then confirm every dialog.
+4. For RouterAI, add `JEV_API_URL` and `JEV_MODEL` with the values above, then add `JEV_API_KEY` with the RouterAI key. For TypeSafe, add `TYPESAFE_API_KEY` with the TypeSafe key.
+5. Confirm every dialog.
 6. Start Codex Desktop again and open a new chat.
 
 You can confirm that the user variable exists without displaying the key:
 
 ```powershell
-[bool][Environment]::GetEnvironmentVariable("TYPESAFE_API_KEY", "User")
+[bool][Environment]::GetEnvironmentVariable("JEV_API_KEY", "User")
 ```
 
-Expected output: `True`.
-
-PowerShell can also save the variable persistently:
-
-```powershell
-[Environment]::SetEnvironmentVariable("TYPESAFE_API_KEY", "<YOUR_TYPESAFE_API_KEY>", "User")
-```
-
-This form can leave the key in shell history, so the Windows dialog is safer. A temporary assignment such as `$env:TYPESAFE_API_KEY = "<YOUR_TYPESAFE_API_KEY>"` reaches Codex only when Codex is launched from that same PowerShell process; it does not update an already-running Desktop app.
+Expect `True`. For TypeSafe, check `TYPESAFE_API_KEY` instead.
 
 ### macOS or Linux
 
-When launching Codex from a terminal, export the key before starting Codex from that same shell:
+When launching Codex from a terminal, export the provider settings before starting Codex from that same shell. For RouterAI, configure `JEV_API_KEY` in the launcher environment and export these public settings:
 
 ```bash
-export TYPESAFE_API_KEY='<YOUR_TYPESAFE_API_KEY>'
+export JEV_API_URL='https://routerai.ru/api/v1/decisions'
+export JEV_MODEL='~typesafe/jev-latest'
 ```
 
 For a launcher-started Desktop app, configure the variable in the environment used by that launcher or login session. Quit and reopen Codex after changing it, then start a new chat.
@@ -109,23 +111,33 @@ The opt-out is checked before first-prompt activation. Removing it during the sa
 
 ## Code review and checkpoints
 
-Ask Codex to review a diff with Jev or use the installed `jev-review` skill. Empty diffs return `NO_DIFF`; unavailable analysis returns `UNAVAILABLE`, never a false merge verdict.
+Ask Codex to review a diff with Jev or use the installed `jev-review` skill. Empty diffs return `NO_DIFF` and unavailable analysis returns `UNAVAILABLE`. RouterAI reviews report token usage and leave `cost_usd` unset (`null`). Check RouterAI for actual charges.
 
 For long work, the `jev-checkpoint` skill maintains `.codex/jev-checkpoints/<session-id>.md`. Checkpoints are local, ignored by Git, bounded during recovery, and must never contain credentials.
 
 ## Privacy
 
-Routing sends the subtask description and five typed questions to `https://api.typesafe.ai/v1/systemone`. Review sends the diff, title, description, changed-file list, and fourteen typed questions. Model discovery and checkpoint handling stay local. The plugin does not intentionally log API keys, prompts, diffs, request bodies, or response bodies. The local sensitive-input guard is defensive, not a complete secret scanner. See [security and data flow](docs/security.md).
+The configured Jev provider receives the subtask description and five typed questions for routing, or the diff, title, description, changed-file list, and fourteen typed questions for review. Model discovery and checkpoint handling stay local. See [security and data flow](docs/security.md).
 
 ## Update
 
+Update your local fork checkout, then reinstall the plugin from its marketplace:
+
 ```powershell
-codex plugin marketplace upgrade jev-codex
+git pull --ff-only
 codex plugin remove jev-codex@jev-codex
 codex plugin add jev-codex@jev-codex
 ```
 
-Open a new chat after updating.
+To bring new upstream changes into the fork, add the original repository as `upstream` once per clone, then fetch and merge:
+
+```powershell
+git remote add upstream https://github.com/SomebooksIT/jev-codex.git
+git fetch upstream
+git merge upstream/main
+```
+
+Run the tests, reinstall, and open a new chat after updating.
 
 ## Remove
 
@@ -136,7 +148,8 @@ codex plugin marketplace remove jev-codex
 
 ## Troubleshooting
 
-- `route=inherit`, `api_key_missing`: follow [Configure the TypeSafe key](#configure-the-typesafe-key), quit Codex completely, reopen it, and start a new chat.
+- `route=inherit`, `api_key_missing`: check the matching provider key under [Configure the Jev provider](#configure-the-jev-provider), restart Codex Desktop, and start a new chat.
+- `invalid_provider_config`: set `JEV_API_URL` to one of the two supported HTTPS endpoints.
 - `route=inherit`, `model_discovery_failed`: confirm the installed Codex app exposes `codex app-server --stdio`; inheritance remains safe.
 - No policy in an existing chat: open a new chat after installation or update.
 - Selected model rejected by Codex: the policy retries that subtask once by inheritance without another Jev call.

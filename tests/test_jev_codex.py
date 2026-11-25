@@ -8,7 +8,10 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.response
 import unittest
+from email.message import Message
+from functools import partial
 from pathlib import Path
 from unittest import mock
 
@@ -217,6 +220,31 @@ class JevClientTests(unittest.TestCase):
                 self.assertEqual(len(opener.calls), 2)
                 self.assertEqual(sleeps, [0.5])
 
+    def test_provider_credentials_never_cross_endpoints(self):
+        client = client_module()
+        for env, reason in (
+            ({"JEV_API_KEY": "router-key"}, "api_key_missing"),
+            ({"JEV_API_URL": client.ROUTERAI_API_URL, "TYPESAFE_API_KEY": "direct-key"}, "api_key_missing"),
+            ({"JEV_API_URL": "https://api.typesafe.ai/other", "JEV_API_KEY": "router-key"}, "invalid_provider_config"),
+        ):
+            with self.subTest(reason=reason), self.assertRaises(client.JevUnavailable) as caught:
+                client.jev_request_options(env)
+            self.assertEqual(caught.exception.reason, reason)
+
+    def test_routerai_redirect_never_reaches_typesafe(self):
+        client = client_module()
+        headers = Message()
+        headers["Location"] = client.API_URL
+        response = urllib.response.addinfourl(io.BytesIO(), headers, client.ROUTERAI_API_URL, 302)
+        response.msg = "Found"
+        options = client.jev_request_options({"JEV_API_URL": client.ROUTERAI_API_URL, "JEV_API_KEY": "router-key"})
+        with mock.patch("urllib.request.HTTPSHandler.https_open", return_value=response) as https_open:
+            with self.assertRaises(client.JevUnavailable) as caught:
+                client.ask_jev("task", self.CHOICE_QUESTION, **options)
+        self.assertEqual(caught.exception.reason, "http_error")
+        https_open.assert_called_once()
+        self.assertEqual(https_open.call_args.args[0].full_url, client.ROUTERAI_API_URL)
+
     def test_401_does_not_retry(self):
         client = client_module()
         error = urllib.error.HTTPError(
@@ -344,6 +372,26 @@ class RouterTests(unittest.TestCase):
     @staticmethod
     def fake(response):
         return lambda *_args, **_kwargs: response
+
+    def test_routerai_route_uses_existing_decision_parser(self):
+        client = client_module()
+        router = router_module()
+        opener = SequenceOpener({**self.response(), "provider": "TypeSafe", "model": "typesafe/jev-1.14"})
+        result = router.route_task(
+            "List matching files",
+            current_model="gpt-6-sol",
+            env={"JEV_API_URL": client.ROUTERAI_API_URL, "JEV_API_KEY": "router-key", "TYPESAFE_API_KEY": "direct-key"},
+            ask=partial(client.ask_jev, opener=opener),
+            discover=self.catalog,
+        )
+        self.assertIn("model", result)
+        (request, timeout), = opener.calls
+        body = json.loads(request.data)
+        self.assertEqual(request.full_url, client.ROUTERAI_API_URL)
+        self.assertEqual(request.get_header("Authorization"), "Bearer router-key")
+        self.assertEqual(body["model"], "~typesafe/jev-latest")
+        self.assertEqual(body["questions"], router.QUESTIONS)
+        self.assertEqual(timeout, 5)
 
     def test_different_tasks_can_select_different_models(self):
         router = router_module()
@@ -696,7 +744,11 @@ class RouterTests(unittest.TestCase):
                 return self.returncode or 0
 
         process = Process()
-        discovered = router.discover_models(process_factory=lambda *_a, **_k: process)
+        process_factory = mock.Mock(return_value=process)
+        with mock.patch.dict(os.environ, {"JEV_API_KEY": "router-key", "TYPESAFE_API_KEY": "direct-key"}):
+            discovered = router.discover_models(process_factory=process_factory)
+        self.assertNotIn("JEV_API_KEY", process_factory.call_args.kwargs["env"])
+        self.assertNotIn("TYPESAFE_API_KEY", process_factory.call_args.kwargs["env"])
         sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
 
         self.assertEqual(discovered, expected)
@@ -1133,7 +1185,7 @@ class ReviewCliTests(unittest.TestCase):
             calls.append((state, questions, kwargs))
             return self.response(checks, hardcoded_secret=0.5)
 
-        with mock.patch.dict(os.environ, {"TYPESAFE_API_KEY": "test-key"}, clear=True):
+        with mock.patch.dict(os.environ, {"TYPESAFE_API_KEY": "test-key", "JEV_API_KEY": "router-key"}, clear=True):
             result = review.review_diff(
                 self.DIFF,
                 title="Small change",
@@ -1149,7 +1201,7 @@ class ReviewCliTests(unittest.TestCase):
             {"pr_title", "pr_description", "changed_files", "omitted_files", "diff"},
         )
         self.assertEqual(state["changed_files"], ["src/app.py"])
-        self.assertEqual(kwargs, {"api_key": "test-key"})
+        self.assertEqual(kwargs, {"api_key": "test-key", "api_url": client_module().API_URL, "model": "jev-latest"})
         self.assertEqual(result["verdict"], "MERGE")
         self.assertEqual(
             result["escalation"],
@@ -1158,6 +1210,33 @@ class ReviewCliTests(unittest.TestCase):
         for field in ("verdict", "exit_code", "triggered", "answers", "escalation", "omitted_files", "milliseconds", "usage", "cost_usd"):
             self.assertIn(field, result)
         self.assertAlmostEqual(result["cost_usd"], 0.000042)
+
+    def test_routerai_review_uses_model_override_and_existing_review_policy(self):
+        client = client_module()
+        review = review_module()
+        checks, _ = review.load_review_data(SCRIPTS)
+        opener = SequenceOpener({**self.response(checks), "provider": "TypeSafe", "model": "typesafe/jev-1.14"})
+        env = {"JEV_API_URL": client.ROUTERAI_API_URL, "JEV_API_KEY": "router-key", "JEV_MODEL": "typesafe/jev-1.14"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            result = review.review_diff(
+                self.DIFF, title="Small change", description="Replace one value",
+                ask=partial(client.ask_jev, opener=opener),
+            )
+            blocked = review.review_diff(
+                self.DIFF, title="JEV_API_KEY=secret-value", description="",
+                ask=partial(client.ask_jev, opener=opener),
+            )
+        (request, _timeout), = opener.calls
+        body = json.loads(request.data)
+        self.assertEqual(request.full_url, client.ROUTERAI_API_URL)
+        self.assertEqual(request.get_header("Authorization"), "Bearer router-key")
+        self.assertEqual(body["model"], "typesafe/jev-1.14")
+        self.assertEqual(set(body["questions"]), set(checks))
+        self.assertEqual(body["state"]["diff"], self.DIFF)
+        self.assertEqual(result["verdict"], "MERGE")
+        self.assertEqual(result["usage"], {"input_tokens": 1000, "output_tokens": 20})
+        self.assertIsNone(result["cost_usd"])
+        self.assertEqual(blocked["reason"], "sensitive_input")
 
     def test_working_uses_tracked_git_diff_and_excludes_untracked_files(self):
         review = review_module()

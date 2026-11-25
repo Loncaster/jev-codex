@@ -1,4 +1,4 @@
-"""Small, validated client for the TypeSafe System One API."""
+"""Small, validated client for Jev decisions."""
 
 from __future__ import annotations
 
@@ -9,11 +9,13 @@ import socket
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
+ROUTERAI_API_URL = "https://routerai.ru/api/v1/decisions"
+TYPESAFE_MODEL = "jev-latest"
 _PLACEHOLDERS = (
     "your-api-key",
     "changeme",
@@ -25,7 +27,7 @@ _PLACEHOLDERS = (
     "sk-test",
 )
 _ASSIGNMENT = re.compile(
-    r"(?i)\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|bearer[_-]?token|password|secret)\b"
+    r"(?i)\b(?:(?:(?:jev|typesafe)[_-])?api[_-]?key|access[_-]?token|auth[_-]?token|bearer[_-]?token|password|secret)\b"
     r"\s*[:=]\s*[\"']?([^\s\"';,}]+)"
 )
 _BEARER_HEADER = re.compile(
@@ -39,6 +41,26 @@ class JevUnavailable(RuntimeError):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def jev_request_options(env: Mapping[str, str]) -> dict[str, str]:
+    api_url = env.get("JEV_API_URL") or API_URL
+    if api_url == API_URL:
+        api_key = env.get("TYPESAFE_API_KEY")
+        default_model = TYPESAFE_MODEL
+    elif api_url == ROUTERAI_API_URL:
+        api_key = env.get("JEV_API_KEY")
+        default_model = "~typesafe/jev-latest"
+    else:
+        raise JevUnavailable("invalid_provider_config")
+    if not api_key:
+        raise JevUnavailable("api_key_missing")
+    return {"api_url": api_url, "api_key": api_key, "model": env.get("JEV_MODEL") or default_model}
 
 
 def contains_sensitive_input(text: str) -> bool:
@@ -86,7 +108,7 @@ def _validate_response(payload: object, questions: dict[str, object]) -> dict[st
         elif answer_type == "choice":
             criteria = question.get("criteria")
             choice = answer.get("choice")
-            if not isinstance(criteria, dict) or choice not in criteria:
+            if not isinstance(criteria, dict) or not isinstance(choice, str) or choice not in criteria:
                 raise JevUnavailable("invalid_response")
             _number(answer.get("confidence"), minimum=0, maximum=1)
         elif answer_type == "score":
@@ -105,7 +127,9 @@ def ask_jev(
     questions: dict[str, object],
     *,
     api_key: str | None,
-    opener: Callable[..., Any] = urllib.request.urlopen,
+    api_url: str = API_URL,
+    model: str = TYPESAFE_MODEL,
+    opener: Callable[..., Any] = urllib.request.build_opener(_NoRedirects()).open,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
     if not api_key:
@@ -113,7 +137,7 @@ def ask_jev(
 
     try:
         data = json.dumps(
-            {"state": state, "model": "jev-latest", "questions": questions},
+            {"state": state, "model": model, "questions": questions},
             ensure_ascii=False,
             allow_nan=False,
         ).encode("utf-8")
@@ -121,7 +145,7 @@ def ask_jev(
         raise JevUnavailable("invalid_request") from exc
 
     request = urllib.request.Request(
-        API_URL,
+        api_url,
         data=data,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -143,14 +167,15 @@ def ask_jev(
                 raise JevUnavailable("invalid_response") from exc
             return _validate_response(payload, questions)
         except urllib.error.HTTPError as exc:
+            exc.close()
             if exc.code in (429, 529) and attempt == 0:
                 sleeper(0.5)
                 continue
-            raise JevUnavailable("http_error") from exc
+            raise JevUnavailable("http_error") from None
         except (TimeoutError, socket.timeout) as exc:
             raise JevUnavailable("timeout") from exc
         except urllib.error.URLError as exc:
             reason = "timeout" if isinstance(exc.reason, (TimeoutError, socket.timeout)) else "http_error"
-            raise JevUnavailable(reason) from exc
+            raise JevUnavailable(reason) from None
 
     raise JevUnavailable("http_error")

@@ -12,7 +12,7 @@ This directory is the installable Codex Desktop plugin. Repository-level install
 
 ## TypeSafe API key
 
-Set `TYPESAFE_API_KEY` in the environment that starts Codex Desktop, then quit and reopen Codex and begin a new chat. The repository README contains the complete [Windows, macOS, Linux, and non-secret verification procedure](../../README.md#configure-the-typesafe-key). Do not paste the key into a prompt.
+Configure `JEV_API_URL`, `JEV_MODEL`, and `JEV_API_KEY` for RouterAI or `TYPESAFE_API_KEY` for TypeSafe. Quit and reopen Codex, then start a new chat. See the [Desktop setup and verification procedure](../../README.md#configure-the-jev-provider).
 
 ## Subagent routing
 

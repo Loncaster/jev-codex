@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from jev_client import JevUnavailable, ask_jev, contains_sensitive_input
+from jev_client import API_URL, JevUnavailable, ask_jev, contains_sensitive_input, jev_request_options
 
 
 def load_review_data(root: Path) -> tuple[dict, dict]:
@@ -133,12 +133,13 @@ def review_diff(
 
     if not diff.strip():
         return _no_diff(policy)
-    api_key = os.environ.get("TYPESAFE_API_KEY")
-    if not api_key:
-        return _unavailable("api_key_missing", policy, elapsed())
+    try:
+        request_options = jev_request_options(os.environ)
+    except JevUnavailable as exc:
+        return _unavailable(exc.reason, policy, elapsed())
     if len(diff) > policy["limits"]["max_input_chars"]:
         return _unavailable("input_too_large", policy, elapsed())
-    if contains_sensitive_input(diff):
+    if any(contains_sensitive_input(text) for text in (title, description, diff)):
         return _unavailable("sensitive_input", policy, elapsed())
 
     state = {
@@ -153,7 +154,7 @@ def review_diff(
         for check_id, check in checks.items()
     }
     try:
-        response = ask(state, questions, api_key=api_key)
+        response = ask(state, questions, **request_options)
         answers = response["answers"]
         result = evaluate_policy(answers, checks, policy)
         if result["verdict"] == "UNAVAILABLE":
@@ -184,7 +185,7 @@ def review_diff(
                 input_tokens * policy["pricing"]["input_per_million_usd"] / 1_000_000
                 + output_tokens * policy["pricing"]["output_per_million_usd"] / 1_000_000,
                 8,
-            ),
+            ) if request_options["api_url"] == API_URL else None,
         }
     )
     return result
